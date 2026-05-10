@@ -100,7 +100,6 @@ def send_chart(chat_id, sheet, period="all"):
     rows = get_all_rows(sheet)
     now  = datetime.now()
     cats = {}
-
     for row in rows:
         d = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
         match = True
@@ -143,14 +142,12 @@ def send_chart(chat_id, sheet, period="all"):
 
     url = "https://quickchart.io/chart?width=700&height=400&c=" + \
           requests.utils.quote(json.dumps(chart_config))
-
     send_photo_url(chat_id, url)
 
 def send_table(chat_id, sheet, period="all"):
     rows     = get_all_rows(sheet)
     now      = datetime.now()
     filtered = []
-
     for row in rows:
         d = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
         match = True
@@ -174,7 +171,6 @@ def send_table(chat_id, sheet, period="all"):
     msg += f"\n💰 Total: RM{total:.2f}"
     send_msg(chat_id, msg)
 
-    # CSV download
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Date", "Item", "Amount", "Category"])
@@ -182,7 +178,6 @@ def send_table(chat_id, sheet, period="all"):
         writer.writerow([row[0], row[1], row[2], row[3]])
     writer.writerow([])
     writer.writerow(["", "TOTAL", f"{total:.2f}", ""])
-
     csv_bytes = output.getvalue().encode("utf-8")
     filename  = f"expenses_{period}_{now.strftime('%Y%m%d')}.csv"
     send_document(chat_id, filename, csv_bytes, f"📥 {period.upper()} expenses CSV")
@@ -194,7 +189,6 @@ def send_range(chat_id, sheet, period):
     total = 0
     count = 0
     cats  = {}
-
     for row in rows:
         d = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
         match = False
@@ -208,11 +202,9 @@ def send_range(chat_id, sheet, period):
             cat    = row[3]
             msg   += f"• {row[1]} — RM{amt} ({cat})\n"
             cats[cat] = cats.get(cat, 0) + amt
-
     if count == 0:
         send_msg(chat_id, f"📭 No expenses for {period}.")
         return
-
     msg += f"\n💰 Total: RM{total:.2f}\n\n📊 By Category:\n"
     for c, v in cats.items():
         msg += f"  {EMOJI.get(c,'📦')} {c}: RM{v:.2f}\n"
@@ -225,11 +217,56 @@ def send_list(chat_id, sheet):
         return
     msg   = "🧾 Last 10 Expenses:\n\n"
     start = max(0, len(rows) - 10)
-    for row in rows[start:]:
+    for i, row in enumerate(rows[start:], start=1):
         d        = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
         date_str = f"{d.day}/{d.month}"
-        msg += f"• [{date_str}] {EMOJI.get(row[3],'📦')} {row[1]} — RM{row[2]} ({row[3]})\n"
+        msg += f"{i}. [{date_str}] {EMOJI.get(row[3],'📦')} {row[1]} — RM{row[2]} ({row[3]})\n"
+    msg += "\n🗑 To delete: /delete <number>\nExample: /delete 3"
     send_msg(chat_id, msg)
+
+def delete_entry(chat_id, sheet, number):
+    try:
+        rows = get_all_rows(sheet)
+        if not rows:
+            send_msg(chat_id, "📭 No expenses to delete.")
+            return
+
+        start = max(0, len(rows) - 10)
+        visible_rows = rows[start:]
+
+        if number < 1 or number > len(visible_rows):
+            send_msg(chat_id, f"❌ Invalid number. Send /list to see entries 1-{len(visible_rows)}.")
+            return
+
+        # Get the row to delete
+        target = visible_rows[number - 1]
+        target_date = target[0]
+        target_item = target[1]
+
+        # Find actual row number in sheet (1-indexed, includes all rows)
+        all_sheet_rows = sheet.get_all_values()
+        sheet_row_num  = None
+
+        for i, row in enumerate(all_sheet_rows, start=1):
+            if len(row) >= 2 and row[0] == target_date and row[1] == target_item:
+                sheet_row_num = i
+                break
+
+        if not sheet_row_num:
+            send_msg(chat_id, "❌ Could not find that entry.")
+            return
+
+        sheet.delete_rows(sheet_row_num)
+        send_msg(chat_id,
+            f"🗑 Deleted:\n"
+            f"📝 {target_item}\n"
+            f"💰 RM{target[2]}\n"
+            f"📂 {target[3]}"
+        )
+
+    except Exception as ex:
+        print("delete error:", ex)
+        send_msg(chat_id, "❌ Delete failed. Try again.")
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -266,6 +303,16 @@ def webhook():
             send_table(chat_id, sheet, "month")
         elif text == "/tableyear":
             send_table(chat_id, sheet, "year")
+        elif text.startswith("/delete"):
+            parts = text.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                delete_entry(chat_id, sheet, int(parts[1]))
+            else:
+                send_msg(chat_id,
+                    "Usage: /delete <number>\n"
+                    "First send /list to see numbers.\n"
+                    "Example: /delete 3"
+                )
         elif text == "/help":
             send_msg(chat_id,
                 "💡 Commands:\n\n"
@@ -283,13 +330,13 @@ def webhook():
                 "/tableday — today\n"
                 "/tablemonth — this month\n"
                 "/tableyear — this year\n\n"
-                "💾 Save expense:\n"
-                "Just type anything!\n"
-                "Examples:\n"
+                "🗑 Delete:\n"
+                "/list — see numbers\n"
+                "/delete 3 — delete entry 3\n\n"
+                "💾 Save — just type:\n"
                 "• grab 12\n"
-                "• lunch nasi lemak 8.50\n"
-                "• market 150\n"
-                "• netflix 17"
+                "• lunch 8.50\n"
+                "• market 150"
             )
         elif text.startswith("/"):
             send_msg(chat_id, "❓ Unknown command. Type /help")
